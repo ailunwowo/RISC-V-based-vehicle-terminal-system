@@ -1,0 +1,17 @@
+{
+    "files.associations": {
+        "kernel.h": "c",
+        "gpio.h": "c",
+        "system_error": "c",
+        "array": "c",
+        "functional": "c",
+        "tuple": "c",
+        "type_traits": "c",
+        "utility": "c",
+        "qma6100p.h": "c",
+        "init.h": "c",
+        "stdint.h": "c",
+        "driver_sgp30_read_test.h": "c",
+        "i2c-dev.h": "c"
+    }
+}

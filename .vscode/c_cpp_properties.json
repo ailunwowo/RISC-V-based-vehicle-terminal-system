@@ -1,0 +1,20 @@
+{
+    "configurations": [
+        {
+            "name": "Linux",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "/home/alen/VisonFive2_SDK/VisionFive2/linux/arch/riscv/include",
+                "/home/alen/VisonFive2_SDK/VisionFive2/linux/include",
+                "/home/alen/VisonFive2_SDK/VisionFive2/linux/usr/include",
+                "/home/alen/VisonFive2_SDK/VisionFive2/linux/include",
+                "/home/alen/VisonFive2_SDK/VisionFive2/linux/arch/um/include/asm",
+                "/home/alen/VisonFive2_SDK/VisionFive2/linux/include/uapi",
+                "/home/alen/VisonFive2_SDK/VisionFive2/linux/arch/riscv/include/uapi",
+                "/home/alen/VisonFive2_SDK/VisionFive2/linux/arch/um/include",
+                "/home/alen/VisonFive2_SDK/VisionFive2/linux/tools/virtio"
+            ]
+        }
+    ],
+    "version": 4
+}
