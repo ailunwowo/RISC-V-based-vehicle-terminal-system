@@ -12,6 +12,12 @@
         "init.h": "c",
         "stdint.h": "c",
         "driver_sgp30_read_test.h": "c",
-        "i2c-dev.h": "c"
+        "i2c-dev.h": "c",
+        "interrupt.h": "c",
+        "string.h": "c",
+        "module.h": "c",
+        "of_irq.h": "c",
+        "device.h": "c",
+        "fs.h": "c"
     }
 }

@@ -1,106 +1,104 @@
-#include <linux/cdev.h>
-#include <linux/device.h> //class devise声明
-#include <linux/fs.h>	  //file_operations声明
-#include <linux/gpio.h>
-#include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/types.h>   //设备号 dev_t 类型声明
-#include <linux/uaccess.h> //copy_from_user 的头文件
-#define gpio_num 50
-static int major;
-static dev_t led_dev;
-static struct class *led_class;
-static struct device *led_device;
-static struct cdev led_cdev;
-static int led_io_open(struct inode *inode, struct file *filp) {
-	printk("led_open\n");
-	gpio_request(gpio_num, NULL);
-	return 0;
-}
-static ssize_t led_io_write(struct file *filp, const char __user *buf,
-			    size_t count, loff_t *fpos) {
-	int Cmd = 0; //上层是整数1
-	printk("io_write\n");
-	copy_from_user(&Cmd, buf, count);
-	if (Cmd == 1) {
-		printk("set 1\n");
-		gpio_direction_output(gpio_num, 1);
-	} else if (Cmd == 0) {
-		printk("set 0\n");
-		gpio_direction_output(gpio_num, 0);
-	} else {
-		printk("cmd error\n");
-	}
-	return count;
-}
-static ssize_t led_io_read(struct file *filp, char __user *buf, size_t count,
-			   loff_t *fpos) {
-	printk("ledread!!");
-	unsigned long err;
-	char *ptr = (char)__get_free_page(GFP_KERNEL);
-	if (!ptr) {
-		return -ENOMEM;
-	}
+#include <linux/gpio.h>
+#include <linux/delay.h>
+#include <linux/ktime.h>
 
-	if (copy_to_user(buf, ptr, count)) {
-		free_page((unsigned long)ptr);
-		return -EFAULT;
-	}
-	free_page((unsigned long)ptr);
-	return count;
+#define GPIO_NUM 50  // 使用GPIO50
+
+/******************** 精准延时实现 ********************/
+static inline void delay_cycles(unsigned long cycles)
+{
+    ktime_t start = ktime_get_ns();
+    while ((ktime_get_ns() - start) < cycles);
 }
-static const struct file_operations led_io_fops = {
-    .owner = THIS_MODULE,
-    .open = led_io_open,
-    .read = led_io_read,
-    .write = led_io_write,
-};
-static int __init led_module_init(void) {
-	printk("Hello, module is installed !\n");
-	int ret;
-	// 分配设备号
-	if (alloc_chrdev_region(&led_dev, 0, 1, "led_device") < 0) {
-		printk(KERN_ERR "Failed to allocate device number\n");
-		return -1;
-	}
-	// 创建设备类
-	led_class = class_create(THIS_MODULE, "led_class");
-	if (IS_ERR(led_class)) {
-		printk(KERN_ERR "Failed to create class\n");
-		unregister_chrdev_region(led_dev, 1);
-		return -1;
-	}
-	// 创建设备节点
-	led_device = device_create(led_class, NULL, led_dev, NULL, "ws2818b");
-	if (IS_ERR(led_device)) {
-		printk(KERN_ERR "Failed to create device\n");
-		class_destroy(led_class);
-		unregister_chrdev_region(led_dev, 1);
-		return -1;
-	}
-	// 注册字符设备驱动
-	cdev_init(&led_cdev, &led_io_fops);
-	ret = cdev_add(&led_cdev, led_dev, 1);
-	if (ret < 0) {
-		printk(KERN_ERR "Failed to add device to kernel\n");
-		device_destroy(led_class, led_dev);
-		class_destroy(led_class);
-		unregister_chrdev_region(led_dev, 1);
-		return -1;
-	}
-	return 0;
+
+// 校准后的延时函数（根据实际CPU频率调整）
+#define CPU_FREQ 1000000000  // 假设CPU 1GHz，需根据实际情况修改
+
+static void delay_300ns(void) {
+    delay_cycles(CPU_FREQ * 300 / 1000000000); // 300ns
 }
-static void __exit led_module_exit(void) {
-	gpio_free(gpio_num);
-	printk("Good-bye, module was removed!\n");
-	// 删除字符设备驱动并从内核中删除设备节点
-	cdev_del(&led_cdev);
-	device_destroy(led_class, led_dev);
-	// 销毁设备类
-	class_destroy(led_class);
-	// 释放设备号资源
-	unregister_chrdev_region(led_dev, 1);
+
+static void delay_1090ns(void) {
+    delay_cycles(CPU_FREQ * 1090 / 1000000000); // 1090ns
 }
-module_init(led_module_init);
-module_exit(led_module_exit);
+
+/******************** 与STM32完全相同的函数实现 ********************/
+static void RGB_Init(void) {
+    gpio_request(GPIO_NUM, "WS2812B");
+    gpio_direction_output(GPIO_NUM, 0);
+}
+
+static void RGB_Reset(void) {
+    gpio_set_value(GPIO_NUM, 0);
+    udelay(350);
+}
+
+static void RGB_Send0(void) {
+    gpio_set_value(GPIO_NUM, 1);
+    delay_300ns();
+    gpio_set_value(GPIO_NUM, 0);
+    delay_1090ns();
+}
+
+static void RGB_Send1(void) {
+    gpio_set_value(GPIO_NUM, 1);
+    delay_1090ns();
+    gpio_set_value(GPIO_NUM, 0);
+    delay_300ns();
+}
+
+static void RGB_Send_Data(u8 data) { 
+    int i;
+    for(i=8; i>0; i--) {
+        if(data & 0x80) RGB_Send1();
+        else RGB_Send0();
+        data <<= 1;
+    }
+}
+
+static void Send_GRB(uint8_t G, uint8_t R, uint8_t B) {
+    RGB_Send_Data(G);
+    RGB_Send_Data(R);
+    RGB_Send_Data(B);
+    RGB_Reset();
+}
+
+static void Continuous_Set_LED(uint8_t n, uint32_t GRB) {
+    while(n--) {
+        RGB_Send_Data((GRB>>16)&0xFF);
+        RGB_Send_Data((GRB>>8)&0xFF);
+        RGB_Send_Data(GRB&0xFF);
+    }
+    RGB_Reset();
+}
+
+/******************** 关键优化措施 ********************/
+static void __send_data_safe(void) {
+    unsigned long flags;
+    
+    // 禁用中断保证时序
+    local_irq_save(flags);
+    
+    // 发送数据（示例：点亮10个红灯）
+    Continuous_Set_LED(10, 0xFF0000);
+    
+    // 恢复中断
+    local_irq_restore(flags);
+}
+
+/******************** 模块初始化 ********************/
+static int __init ws2812b_init(void) {
+    RGB_Init();
+    __send_data_safe();
+    return 0;
+}
+
+static void __exit ws2812b_exit(void) {
+    Continuous_Set_LED(10, 0x000000); // 关闭所有灯
+    gpio_free(GPIO_NUM);
+}
+
+module_init(ws2812b_init);
+module_exit(ws2812b_exit);
 MODULE_LICENSE("GPL");
