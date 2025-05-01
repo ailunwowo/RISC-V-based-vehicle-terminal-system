@@ -1,77 +1,90 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <fcntl.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <string.h>
-#include <time.h>
-#include <sched.h>
 #include <stdint.h>
-#define GPIO_PATH "/sys/class/gpio/gpio50/value"
-#define T0H_NS  50    // 0码高电平时间
-#define T1H_NS  900    // 1码高电平时间
-#define CYCLE_NS 950  // 码元总周期
-#define NS_PER_SEC 1000000000L
+#include <sys/ioctl.h>
+#include <linux/spi/spidev.h>
 
-int gpio_fd;
+#define SPI_DEVICE    "/dev/spidev1.0"
+#define SPI_SPEED_HZ  8000000   // 8 MHz（适配你的 SPI 控制器限制）
+#define SPI_BITS      8
+#define SPI_MODE      SPI_MODE_0
 
-// 函数前置声明
-void busy_delay_ns(long ns);
-void set_realtime_priority();
+// WS2812B 协议参数
+#define T0H  0x60  // '0' bit: 01100000 (占空比 2/8)
+#define T1H  0x7C  // '1' bit: 01111100 (占空比 6/8)
+#define RESET_DELAY 64  // Reset 信号长度（单位：字节，全0）
 
-// GPIO电平控制
-void gpio_write(int val) {
-    char buf[2] = {val ? '1' : '0', '\n'};
-    if (write(gpio_fd, buf, sizeof(buf)) != sizeof(buf)) {
-        perror("GPIO write error");
+// 将 RGB 转换为 WS2812B 的 SPI 数据格式
+void rgb_to_spi(uint8_t r, uint8_t g, uint8_t b, uint8_t *spi_buf) {
+    uint8_t grb[3] = {g, r, b};  // WS2812B 使用 GRB 顺序
+    for (int i = 0; i < 24; i++) {
+        uint8_t bit = (grb[i / 8] >> (7 - (i % 8))) & 0x01;
+        spi_buf[i] = bit ? T1H : T0H;
     }
-    lseek(gpio_fd, 0, SEEK_SET);
-}
-
-// 精准延时实现
-void busy_delay_ns(long ns) {
-    struct timespec start, now;
-    clock_gettime(CLOCK_MONOTONIC, &start);
-    do {
-        clock_gettime(CLOCK_MONOTONIC, &now);
-    } while ((now.tv_sec - start.tv_sec)*NS_PER_SEC 
-           + (now.tv_nsec - start.tv_nsec) < ns);
-}
-
-// 设置实时优先级
-void set_realtime_priority() {
-    struct sched_param param = {.sched_priority = 99};
-    if (sched_setscheduler(0, SCHED_FIFO, &param) == -1) {
-        perror("sched_setscheduler failed");
-    }
-}
-
-// 发送单个比特
-void send_bit(int val) {
-    gpio_write(1);
-    busy_delay_ns(val ? T1H_NS : T0H_NS);
-    gpio_write(0);
-    busy_delay_ns(CYCLE_NS - (val ? T1H_NS : T0H_NS));
-}
-
-// 发送24位颜色数据
-void send_grb(uint8_t g, uint8_t r, uint8_t b) {
-    for(int i=7; i>=0; i--) send_bit((g >> i) & 1);
-    for(int i=7; i>=0; i--) send_bit((r >> i) & 1);
-    for(int i=7; i>=0; i--) send_bit((b >> i) & 1);
 }
 
 int main() {
-    set_realtime_priority();
-    
-    if((gpio_fd = open(GPIO_PATH, O_WRONLY)) < 0) {
-        perror("GPIO open failed");
-        exit(EXIT_FAILURE);
+    int spi_fd;
+    uint8_t mode = SPI_MODE;
+    uint8_t bits = SPI_BITS;
+    uint32_t speed = SPI_SPEED_HZ;
+
+    // 打开 SPI 设备
+    if ((spi_fd = open(SPI_DEVICE, O_RDWR)) < 0) {
+        perror("Failed to open SPI device");
+        return -1;
     }
 
-    // 点亮10个蓝色LED
-    for(int i=0; i<4; i++) 
-        send_grb(0x00, 0x00, 0xFF);
-    
-    close(gpio_fd);
-    return EXIT_SUCCESS;
+    // 配置 SPI 参数
+    if (ioctl(spi_fd, SPI_IOC_WR_MODE, &mode) < 0) {
+        perror("Failed to set SPI mode");
+        close(spi_fd);
+        return -1;
+    }
+    if (ioctl(spi_fd, SPI_IOC_WR_BITS_PER_WORD, &bits) < 0) {
+        perror("Failed to set bits per word");
+        close(spi_fd);
+        return -1;
+    }
+    if (ioctl(spi_fd, SPI_IOC_WR_MAX_SPEED_HZ, &speed) < 0) {
+        perror("Failed to set max speed");
+        close(spi_fd);
+        return -1;
+    }
+
+    // 主循环：红 → 绿 → 蓝
+    uint8_t reset_buf[RESET_DELAY];
+    uint8_t spi_data[24];  // 24 bits (3 bytes) per LED
+    uint8_t output_buf[RESET_DELAY + 24 + RESET_DELAY];  // Reset + Data + Reset
+
+    memset(reset_buf, 0x00, sizeof(reset_buf));  // Reset 信号（全0）
+
+    while (1) {
+        // 红色
+        rgb_to_spi(0xFF, 0x00, 0x00, spi_data);
+        memset(output_buf, 0x00, sizeof(output_buf));
+        memcpy(output_buf + RESET_DELAY, spi_data, 24);
+        write(spi_fd, output_buf, sizeof(output_buf));
+        usleep(500000);  // 500ms 延迟
+
+        // 绿色
+        rgb_to_spi(0x00, 0xFF, 0x00, spi_data);
+        memset(output_buf, 0x00, sizeof(output_buf));
+        memcpy(output_buf + RESET_DELAY, spi_data, 24);
+        write(spi_fd, output_buf, sizeof(output_buf));
+        usleep(500000);
+
+        // 蓝色
+        rgb_to_spi(0x00, 0x00, 0xFF, spi_data);
+        memset(output_buf, 0x00, sizeof(output_buf));
+        memcpy(output_buf + RESET_DELAY, spi_data, 24);
+        write(spi_fd, output_buf, sizeof(output_buf));
+        usleep(500000);
+    }
+
+    close(spi_fd);
+    return 0;
 }
