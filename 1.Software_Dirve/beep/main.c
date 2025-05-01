@@ -5,7 +5,7 @@
 #include <unistd.h>
 #include <errno.h>
 
-#define GPIO_NUM 60
+#define GPIO_NUM 39
 #define SYSFS_GPIO_DIR "/sys/class/gpio"
 
 // 检查GPIO是否已导出
