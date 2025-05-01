@@ -1,258 +1,142 @@
+#include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/i2c.h>
-#include <linux/delay.h>
-#include <linux/cdev.h>
-#include <linux/device.h>
 #include <linux/fs.h>
-#include <linux/slab.h>
-#include <linux/mutex.h>
+#include <linux/miscdevice.h>
+#include <linux/gpio.h>
 #include <linux/uaccess.h>
+#include <linux/delay.h>
 
-#define DRIVER_NAME "sgp30"
-#define SGP30_INIT_CMD 0x2003
-#define SGP30_MEASURE_CMD 0x2008
-#define DEV_NAME "sgp30"
-#define DEV_CLASS "sgp30_class"
+#define DRIVER_NAME "step_motor_driver"
+#define DEVICE_NAME "step_motor"
 
-struct sgp30_device {
-    struct i2c_client *client;
-    struct cdev cdev;
-    dev_t devno;
-    struct class *class;
-    struct device *device;
-    struct mutex lock;
-    uint16_t co2;
-    uint16_t tvoc;
-};
+// 定义GPIO引脚
+#define GPIO_MOTOR_A 54
+#define GPIO_MOTOR_B 51
+#define GPIO_MOTOR_C 56
+#define GPIO_MOTOR_D 40
 
-/* CRC校验函数 */
-static uint8_t sgp30_crc(const uint8_t *data, size_t len)
+// IOCTL命令定义
+#define CMD_STEPMOTOR_A _IOW('L', 0, unsigned long)
+#define CMD_STEPMOTOR_B _IOW('L', 1, unsigned long)
+#define CMD_STEPMOTOR_C _IOW('L', 2, unsigned long)
+#define CMD_STEPMOTOR_D _IOW('L', 3, unsigned long)
+
+MODULE_LICENSE("Dual BSD/GPL");
+MODULE_AUTHOR("wdb");
+
+static long step_motor_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
-    uint8_t crc = 0xFF;
-    size_t i, bit;
-    
-    for (i = 0; i < len; i++) {
-        crc ^= data[i];
-        for (bit = 0; bit < 8; bit++) {
-            if (crc & 0x80)
-                crc = (crc << 1) ^ 0x31;
-            else
-                crc <<= 1;
-        }
-    }
-    return crc;
-}
-
-/* 发送初始化命令 */
-static void sgp30_start(struct i2c_client *client)
-{
-    uint8_t tx_buf[2] = {SGP30_INIT_CMD >> 8, SGP30_INIT_CMD & 0xFF};
-    struct i2c_msg msg = {
-        .addr = client->addr,
-        .flags = 0,
-        .len = 2,
-        .buf = tx_buf
-    };
-
-    if (i2c_transfer(client->adapter, &msg, 1) < 0)
-        dev_err(&client->dev, "初始化命令失败\n");
-}
-
-/* I2C读取函数（重命名解决冲突） */
-static int sgp30_i2c_read(struct i2c_client *client, uint16_t *co2, uint16_t *tvoc)
-{
-    int ret, i;
-    uint8_t tx_buf[2] = {SGP30_MEASURE_CMD >> 8, SGP30_MEASURE_CMD & 0xFF};
-    uint8_t rx_buf[6];
-    struct i2c_msg msg[2] = {
-        {
-            .addr = client->addr,
-            .flags = 0,
-            .len = 2,
-            .buf = tx_buf
-        },
-        {
-            .addr = client->addr,
-            .flags = I2C_M_RD,
-            .len = sizeof(rx_buf),
-            .buf = rx_buf
-        }
-    };
-
-    /* 发送测量命令 */
-    if ((ret = i2c_transfer(client->adapter, &msg[0], 1)) < 0) {
-        dev_err(&client->dev, "命令发送失败: %d\n", ret);
-        return ret;
-    }
-
-    msleep(12); // 等待传感器准备数据
-
-    /* 读取数据 */
-    if ((ret = i2c_transfer(client->adapter, &msg[1], 1)) < 0) {
-        dev_err(&client->dev, "数据读取失败: %d\n", ret);
-        return ret;
-    }
-
-    /* 校验CRC */
-    for (i = 0; i < 2; i++) {
-        if (sgp30_crc(&rx_buf[i*3], 2) != rx_buf[i*3 + 2]) {
-            dev_err(&client->dev, "CRC错误@%d\n", i);
-            return -EIO;
-        }
-    }
-
-    *co2 = (rx_buf[0] << 8) | rx_buf[1];
-    *tvoc = (rx_buf[3] << 8) | rx_buf[4];
-    return 0;
-}
-
-/* 文件操作函数 */
-static int sgp30_open(struct inode *inode, struct file *filp)
-{
-    struct sgp30_device *dev = container_of(inode->i_cdev, struct sgp30_device, cdev);
-    filp->private_data = dev;
-    return 0;
-}
-
-static int sgp30_release(struct inode *inode, struct file *filp)
-{
-    return 0;
-}
-
-static ssize_t sgp30_read(struct file *filp, char __user *buf,
-                         size_t count, loff_t *fpos)
-{
-    struct sgp30_device *dev = filp->private_data;
-    char data_str[32];
-    int ret, len;
-
-    mutex_lock(&dev->lock);
-    ret = sgp30_i2c_read(dev->client, &dev->co2, &dev->tvoc); // 使用重命名的函数
-    mutex_unlock(&dev->lock);
-
-    if (ret < 0)
-        return ret;
-
-    len = snprintf(data_str, sizeof(data_str), "%d %d\n", dev->co2, dev->tvoc);
-    
-    if (count < len)
-        return -EINVAL;
-    
-    if (copy_to_user(buf, data_str, len))
-        return -EFAULT;
-
-    return len;
-}
-
-static const struct file_operations sgp30_fops = {
-    .owner = THIS_MODULE,
-    .open = sgp30_open,
-    .release = sgp30_release,
-    .read = sgp30_read,
-};
-
-/* 探测函数 */
-static int sgp30_probe(struct i2c_client *client, const struct i2c_device_id *id)
-{
-    struct sgp30_device *dev;
-    uint16_t co2, tvoc;
-    int ret;
-
-    dev = devm_kzalloc(&client->dev, sizeof(*dev), GFP_KERNEL);
-    if (!dev)
-        return -ENOMEM;
-
-    dev->client = client;
-    mutex_init(&dev->lock);
-    i2c_set_clientdata(client, dev);
-
-    /* 初始化传感器 */
-    sgp30_start(client);
-
-    /* 等待传感器就绪 */
-    while (1) {
-        ret = sgp30_i2c_read(client, &co2, &tvoc); // 使用重命名的函数
-        if (ret) {
-            dev_err(&client->dev, "初始化测量失败: %d\n", ret);
-            return ret;
-        }
-        if (tvoc > 0)
+    switch(cmd) {
+        case CMD_STEPMOTOR_A:
+            gpio_set_value(GPIO_MOTOR_A, arg);
             break;
-        mdelay(1500);
+        case CMD_STEPMOTOR_B:
+            gpio_set_value(GPIO_MOTOR_B, arg);
+            break;
+        case CMD_STEPMOTOR_C:
+            gpio_set_value(GPIO_MOTOR_C, arg);
+            break;
+        case CMD_STEPMOTOR_D:
+            gpio_set_value(GPIO_MOTOR_D, arg);
+            break;
+        default:
+            return -ENOTTY;
     }
+    return 0;
+}
 
-    /* 注册字符设备 */
-    if ((ret = alloc_chrdev_region(&dev->devno, 0, 1, DEV_NAME)) < 0) {
-        dev_err(&client->dev, "设备号分配失败\n");
+static int step_motor_open(struct inode *inode, struct file *filp)
+{
+    printk(KERN_INFO "Step motor device opened\n");
+    return 0;
+}
+
+static int step_motor_release(struct inode *inode, struct file *filp)
+{
+    printk(KERN_INFO "Step motor device closed\n");
+    return 0;
+}
+
+static struct file_operations step_motor_fops = {
+    .owner = THIS_MODULE,
+    .open = step_motor_open,
+    .release = step_motor_release,
+    .unlocked_ioctl = step_motor_ioctl,
+};
+
+static struct miscdevice step_motor_dev = {
+    .minor = MISC_DYNAMIC_MINOR,
+    .name = DEVICE_NAME,
+    .fops = &step_motor_fops,
+};
+
+static int __init step_motor_init(void)
+{
+    int ret;
+    
+    printk(KERN_INFO "Initializing step motor driver\n");
+    
+    // 申请GPIO资源
+    if ((ret = gpio_request(GPIO_MOTOR_A, "motor-gpio-a")) < 0) {
+        printk(KERN_ERR "Failed to request GPIO %d: %d\n", GPIO_MOTOR_A, ret);
         return ret;
     }
-
-    dev->class = class_create(THIS_MODULE, DEV_CLASS);
-    if (IS_ERR(dev->class)) {
-        ret = PTR_ERR(dev->class);
-        goto chrdev_err;
+    
+    if ((ret = gpio_request(GPIO_MOTOR_B, "motor-gpio-b")) < 0) {
+        printk(KERN_ERR "Failed to request GPIO %d: %d\n", GPIO_MOTOR_B, ret);
+        gpio_free(GPIO_MOTOR_A);
+        return ret;
     }
-
-    cdev_init(&dev->cdev, &sgp30_fops);
-    if ((ret = cdev_add(&dev->cdev, dev->devno, 1)) < 0)
-        goto class_err;
-
-    dev->device = device_create(dev->class, NULL, dev->devno, NULL, DEV_NAME);
-    if (IS_ERR(dev->device)) {
-        ret = PTR_ERR(dev->device);
-        goto cdev_err;
+    
+    if ((ret = gpio_request(GPIO_MOTOR_C, "motor-gpio-c")) < 0) {
+        printk(KERN_ERR "Failed to request GPIO %d: %d\n", GPIO_MOTOR_C, ret);
+        gpio_free(GPIO_MOTOR_A);
+        gpio_free(GPIO_MOTOR_B);
+        return ret;
     }
-
-    dev_info(&client->dev, "驱动加载成功\n");
+    
+    if ((ret = gpio_request(GPIO_MOTOR_D, "motor-gpio-d")) < 0) {
+        printk(KERN_ERR "Failed to request GPIO %d: %d\n", GPIO_MOTOR_D, ret);
+        gpio_free(GPIO_MOTOR_A);
+        gpio_free(GPIO_MOTOR_B);
+        gpio_free(GPIO_MOTOR_C);
+        return ret;
+    }
+    
+    // 设置为输出模式，初始状态为低电平
+    gpio_direction_output(GPIO_MOTOR_A, 0);
+    gpio_direction_output(GPIO_MOTOR_B, 0);
+    gpio_direction_output(GPIO_MOTOR_C, 0);
+    gpio_direction_output(GPIO_MOTOR_D, 0);
+    
+    // 注册misc设备
+    ret = misc_register(&step_motor_dev);
+    if (ret) {
+        printk(KERN_ERR "Failed to register misc device: %d\n", ret);
+        gpio_free(GPIO_MOTOR_A);
+        gpio_free(GPIO_MOTOR_B);
+        gpio_free(GPIO_MOTOR_C);
+        gpio_free(GPIO_MOTOR_D);
+        return ret;
+    }
+    
+    printk(KERN_INFO "Step motor driver initialized\n");
     return 0;
-
-cdev_err:
-    cdev_del(&dev->cdev);
-class_err:
-    class_destroy(dev->class);
-chrdev_err:
-    unregister_chrdev_region(dev->devno, 1);
-    return ret;
 }
 
-static int sgp30_remove(struct i2c_client *client)
+static void __exit step_motor_exit(void)
 {
-    struct sgp30_device *dev = i2c_get_clientdata(client);
-
-    device_destroy(dev->class, dev->devno);
-    class_destroy(dev->class);
-    cdev_del(&dev->cdev);
-    unregister_chrdev_region(dev->devno, 1);
-
-    dev_info(&client->dev, "设备已卸载\n");
-    return 0;
+    // 释放GPIO资源
+    gpio_free(GPIO_MOTOR_A);
+    gpio_free(GPIO_MOTOR_B);
+    gpio_free(GPIO_MOTOR_C);
+    gpio_free(GPIO_MOTOR_D);
+    
+    // 注销设备
+    misc_deregister(&step_motor_dev);
+    
+    printk(KERN_INFO "Step motor driver removed\n");
 }
 
-/* 设备树匹配表 */
-static const struct of_device_id sgp30_dt_ids[] = {
-    { .compatible = "sensirion,sgp30" },
-    {}
-};
-MODULE_DEVICE_TABLE(of, sgp30_dt_ids);
-
-static const struct i2c_device_id sgp30_id[] = {
-    { DRIVER_NAME, 0 },
-    {}
-};
-MODULE_DEVICE_TABLE(i2c, sgp30_id);
-
-static struct i2c_driver sgp30_driver = {
-    .driver = {
-        .name = DRIVER_NAME,
-        .of_match_table = sgp30_dt_ids,
-    },
-    .probe = sgp30_probe,
-    .remove = sgp30_remove,
-    .id_table = sgp30_id,
-};
-
-module_i2c_driver(sgp30_driver);
-
-MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Your Name");
-MODULE_DESCRIPTION("SGP30传感器驱动");
+module_init(step_motor_init);
+module_exit(step_motor_exit);

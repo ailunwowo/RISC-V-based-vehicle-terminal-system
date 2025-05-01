@@ -75,6 +75,44 @@ void clear_all() {
         set_led(i, 0x00, 0x00, 0x00);
     }
 }
+// 渐变红绿蓝效果
+void gradient_rgb_effect() {
+    // 定义渐变颜色参数
+    const uint8_t steps = 30;  // 每个颜色渐变步数
+    const uint16_t delay_ms = 50;  // 每步延迟(ms)
+    
+    while(1) {  // 无限循环，可按需修改
+        // 红色渐变到绿色
+        for (uint8_t s = 0; s < steps; s++) {
+            uint8_t r = 255 * (steps - s) / steps;
+            uint8_t g = 255 * s / steps;
+            for (int i = 0; i < LED_COUNT; i++) {
+                set_led(i, r, g, 0);
+            }
+            usleep(delay_ms * 1000);
+        }
+        
+        // 绿色渐变到蓝色
+        for (uint8_t s = 0; s < steps; s++) {
+            uint8_t g = 255 * (steps - s) / steps;
+            uint8_t b = 255 * s / steps;
+            for (int i = 0; i < LED_COUNT; i++) {
+                set_led(i, 0, g, b);
+            }
+            usleep(delay_ms * 1000);
+        }
+        
+        // 蓝色渐变到红色
+        for (uint8_t s = 0; s < steps; s++) {
+            uint8_t b = 255 * (steps - s) / steps;
+            uint8_t r = 255 * s / steps;
+            for (int i = 0; i < LED_COUNT; i++) {
+                set_led(i, r, 0, b);
+            }
+            usleep(delay_ms * 1000);
+        }
+    }
+}
 
 int main() {
     if (init_spi() < 0) return 1;
