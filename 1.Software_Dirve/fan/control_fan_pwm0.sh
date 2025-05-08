@@ -4,169 +4,154 @@
 PWM_PATH="/sys/class/pwm/pwmchip0/pwm0"
 
 # 检查 PWM 路径是否存在
-if [ ! -d "$PWM_PATH" ]; then
-    echo "错误：PWM 路径 $PWM_PATH 不存在！尝试导出 PWM 通道..."
-    echo 0 > /sys/class/pwm/pwmchip0/export 2>/dev/null
+check_pwm() {
     if [ ! -d "$PWM_PATH" ]; then
-        echo "错误：无法导出 PWM0 通道！请检查设备或权限。"
-        exit 1
+        echo "错误：PWM 路径 $PWM_PATH 不存在！尝试导出 PWM 通道..."
+        echo 0 > /sys/class/pwm/pwmchip0/export 2>/dev/null
+        if [ ! -d "$PWM_PATH" ]; then
+            echo "错误：无法导出 PWM0 通道！请检查设备或权限。"
+            exit 1
+        fi
     fi
-fi
+}
 
-# PWM 参数（使用 500Hz，2ms）
-PERIOD=2000000  # 2ms (500Hz)
-MAX_DUTY=2000000 # 100% 占空比 (等于周期)
+# PWM 参数（默认 500Hz）
+DEFAULT_FREQ=500
+PERIOD=$((1000000000 / DEFAULT_FREQ))
+MAX_DUTY=$PERIOD
 
 # 初始化 PWM
 init_pwm() {
+    check_pwm
+    
     # 禁用 PWM
     echo 0 > "$PWM_PATH/enable" 2>/dev/null
 
     # 设置周期
     echo $PERIOD > "$PWM_PATH/period" || {
-        echo "错误：无法设置周期 $PERIOD 纳秒！请检查硬件支持的周期范围。"
-        return 1
+        echo "错误：无法设置周期 $PERIOD 纳秒！"
+        exit 1
     }
 
-    # 设置初始占空比（停止）
+    # 设置初始占空比
     echo 0 > "$PWM_PATH/duty_cycle" || {
         echo "错误：无法设置占空比！"
-        return 1
+        exit 1
     }
 
     # 设置极性
-    echo "normal" > "$PWM_PATH/polarity" || {
-        echo "错误：无法设置极性！尝试使用 inversed。"
-        echo "inversed" > "$PWM_PATH/polarity" || return 1
-    }
+    echo "normal" > "$PWM_PATH/polarity" 2>/dev/null || 
+    echo "inversed" > "$PWM_PATH/polarity" 2>/dev/null
 
     # 启用 PWM
     echo 1 > "$PWM_PATH/enable" || {
         echo "错误：无法启用 PWM！"
-        return 1
+        exit 1
     }
-
-    echo "PWM 初始化成功，周期 $PERIOD 纳秒（500Hz），风扇已停止。"
-    return 0
 }
 
 # 设置风扇转速
-set_fan_speed() {
+set_speed() {
     local speed=$1
     local duty_cycle=$((speed * MAX_DUTY / 100))
-
-    # 设置占空比
+    
     echo $duty_cycle > "$PWM_PATH/duty_cycle" || {
         echo "错误：无法设置占空比 $duty_cycle 纳秒！"
-        return 1
+        exit 1
     }
-
-    echo "成功：风扇转速设置为 $speed%，占空比 $duty_cycle 纳秒。"
-    return 0
-}
-
-# 停止风扇
-stop_fan() {
-    echo 0 > "$PWM_PATH/duty_cycle" || {
-        echo "错误：无法停止风扇！"
-        return 1
-    }
-    echo "风扇已停止（占空比设置为 0 纳秒）。"
-    return 0
-}
-
-# 设置 PWM 频率
-set_frequency() {
-    local freq=$1
-    local period=$((1000000000 / freq)) # 周期（纳秒）= 10^9 / 频率（Hz）
-
-    # 禁用 PWM
-    echo 0 > "$PWM_PATH/enable" 2>/dev/null
-
-    # 设置新周期
-    echo $period > "$PWM_PATH/period" || {
-        echo "错误：无法设置频率 $freq Hz（周期 $period 纳秒）！"
-        return 1
-    }
-
-    # 更新全局变量
-    PERIOD=$period
-    MAX_DUTY=$period
-
-    # 重新启用 PWM
-    echo 0 > "$PWM_PATH/duty_cycle"
-    echo 1 > "$PWM_PATH/enable" || {
-        echo "错误：无法重新启用 PWM！"
-        return 1
-    }
-
-    echo "成功：PWM 频率设置为 $freq Hz（周期 $period 纳秒）。"
-    return 0
+    echo "风扇转速设置为 $speed%（占空比 $duty_cycle 纳秒）"
 }
 
 # 使用说明
 usage() {
-    echo "指令格式："
-    echo "  speed <百分比>    # 设置风扇转速，0-100"
-    echo "  freq <频率>       # 设置 PWM 频率（Hz），例如 500 表示 500Hz"
-    echo "  stop             # 停止风扇"
-    echo "  exit 或 quit     # 退出脚本"
-    echo "注意：硬件支持的频率范围有限，建议尝试 25Hz、250Hz、500Hz（周期 40000000、4000000、2000000 纳秒）。"
+    echo "用法：$0 [选项]"
+    echo "选项："
+    echo "  -s, --speed <0-100>   设置风扇转速百分比"
+    echo "  -f, --freq <Hz>       设置 PWM 频率（默认500Hz）"
+    echo "  -S, --stop            停止风扇"
+    echo "  -h, --help            显示帮助信息"
+    echo
     echo "示例："
-    echo "  freq 500         # 设置 PWM 频率为 500Hz"
-    echo "  speed 50         # 设置风扇转速为 50%"
-    echo "  stop             # 停止风扇"
+    echo "  $0 -f 250 -s 50      设置500Hz频率并将转速设为50%"
+    echo "  $0 --stop            完全停止风扇"
 }
 
-# 初始化 PWM
-init_pwm || exit 1
+# 主程序
+main() {
+    local speed=-1
+    local freq=$DEFAULT_FREQ
+    local stop_flag=0
 
-# 进入循环，等待用户输入
-echo "进入循环测试模式，输入指令控制 PWM0 风扇（输入 'exit' 或 'quit' 退出）："
-while true; do
-    echo -n "> "
-    read -r command arg1
-
-    # 处理输入
-    case "$command" in
-        "speed")
-            # 验证转速
-            if ! [[ "$arg1" =~ ^[0-9]+$ ]] || [ "$arg1" -lt 0 ] || [ "$arg1" -gt 100 ]; then
-                echo "错误：转速必须是 0 到 100 之间的整数！"
+    # 解析参数
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -s|--speed)
+                if [[ "$2" =~ ^[0-9]+$ ]] && (( "$2" >= 0 && "$2" <= 100 )); then
+                    speed=$2
+                    shift 2
+                else
+                    echo "错误：无效的转速值 '$2'，必须是0-100的整数"
+                    exit 1
+                fi
+                ;;
+            -f|--freq)
+                if [[ "$2" =~ ^[0-9]+$ ]] && (( "$2" >= 10 && "$2" <= 10000 )); then
+                    freq=$2
+                    shift 2
+                else
+                    echo "错误：无效的频率值 '$2'，必须是10-10000的整数"
+                    exit 1
+                fi
+                ;;
+            -S|--stop)
+                stop_flag=1
+                shift
+                ;;
+            -h|--help)
                 usage
-                continue
-            fi
-
-            # 设置转速
-            set_fan_speed "$arg1"
-            ;;
-
-        "freq")
-            # 验证频率
-            if ! [[ "$arg1" =~ ^[0-9]+$ ]] || [ "$arg1" -lt 10 ] || [ "$arg1" -gt 10000 ]; then
-                echo "错误：频率必须是 10 到 10000 Hz 之间的整数！"
+                exit 0
+                ;;
+            *)
+                echo "错误：未知选项 '$1'"
                 usage
-                continue
-            fi
+                exit 1
+                ;;
+        esac
+    done
 
-            # 设置频率
-            set_frequency "$arg1"
-            ;;
+    # 初始化硬件
+    init_pwm
 
-        "stop")
-            stop_fan
-            ;;
+    # 设置频率
+    if (( freq != DEFAULT_FREQ )); then
+        PERIOD=$((1000000000 / freq))
+        MAX_DUTY=$PERIOD
+        echo $PERIOD > "$PWM_PATH/period" || {
+            echo "错误：无法设置频率 $freq Hz（周期 $PERIOD 纳秒）！"
+            exit 1
+        }
+        echo "PWM 频率设置为 $freq Hz"
+    fi
 
-        "exit" | "quit")
-            stop_fan
-            echo 0 > "$PWM_PATH/enable"
-            echo "退出脚本，PWM 已禁用。"
-            exit 0
-            ;;
+    # 执行操作
+    if (( stop_flag == 1 )); then
+        echo 0 > "$PWM_PATH/duty_cycle"
+        echo "风扇已停止"
+    elif (( speed != -1 )); then
+        set_speed $speed
+    else
+        echo "错误：未指定操作参数"
+        usage
+        exit 1
+    fi
 
-        *)
-            echo "错误：无效指令 '$command'！"
-            usage
-            ;;
-    esac
-done
+    # 保持运行（防止立即退出导致PWM禁用）
+    if (( stop_flag == 0 )); then
+        echo "按CTRL+C退出并重置PWM..."
+        trap 'echo 0 > "$PWM_PATH/enable"; exit' SIGINT
+        while true; do sleep 1; done
+    fi
+}
+
+# 启动主程序
+main "$@"

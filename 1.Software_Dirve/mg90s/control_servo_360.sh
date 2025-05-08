@@ -94,63 +94,51 @@ stop_servo() {
 
 # 使用说明
 usage() {
-    echo "指令格式："
-    echo "  cw <速度> [时间]  # 顺时针旋转，速度 0-100，可选持续时间（秒）"
-    echo "  ccw <速度> [时间] # 逆时针旋转，速度 0-100，可选持续时间（秒）"
-    echo "  stop              # 停止舵机"
-    echo "  exit 或 quit      # 退出脚本"
-    echo "示例："
-    echo "  cw 50             # 顺时针旋转，速度 50%"
-    echo "  ccw 100 1         # 逆时针全速旋转 1 秒后停止"
-    echo "  stop              # 停止舵机"
+    echo "用法: $0 [cw|ccw] <速度 0-100> [时间(秒)]"
+    echo "  或: $0 stop"
+    echo "示例:"
+    echo "  $0 cw 50      # 顺时针方向，速度50%持续运行"
+    echo "  $0 ccw 30 1.5 # 逆时针方向，速度30%运行1.5秒"
+    echo "  $0 stop       # 停止舵机"
+    exit 1
 }
 
-# 初始化 PWM
+# 主程序
 init_pwm || exit 1
 
-# 进入循环，等待用户输入
-echo "进入循环测试模式，输入指令控制 MG90S 360° 舵机（输入 'exit' 或 'quit' 退出）："
-while true; do
-    echo -n "> "
-    read -r command arg1 arg2
+# 处理命令行参数
+if [ $# -eq 0 ]; then
+    usage
+fi
 
-    # 处理输入
-    case "$command" in
-        "cw" | "ccw")
-            # 验证速度
-            if ! [[ "$arg1" =~ ^[0-9]+$ ]] || [ "$arg1" -lt 0 ] || [ "$arg1" -gt 100 ]; then
-                echo "错误：速度必须是 0 到 100 之间的整数！"
-                usage
-                continue
-            fi
-
-            # 验证时间（如果提供）
-            if [ -n "$arg2" ]; then
-                if ! [[ "$arg2" =~ ^[0-9]+(\.[0-9]+)?$ ]] || (($(echo "$arg2 <= 0" | bc -l))); then
-                    echo "错误：时间必须是正数！"
-                    usage
-                    continue
-                fi
-            fi
-
-            # 设置舵机
-            set_servo "$command" "$arg1" "$arg2"
-            ;;
-
-        "stop")
-            stop_servo
-            ;;
-
-        "exit" | "quit")
-            stop_servo
-            echo 0 > "$PWM_PATH/enable"
-            echo "退出脚本，PWM 已禁用。"
-            exit 0
-            ;;
-
-        *)
-            echo "错误：无效指令 '$command'！"
+case "$1" in
+    "cw" | "ccw")
+        # 验证速度
+        if [ $# -lt 2 ] || ! [[ "$2" =~ ^[0-9]+$ ]] || [ "$2" -lt 0 ] || [ "$2" -gt 100 ]; then
+            echo "错误：速度必须是 0 到 100 之间的整数！"
             usage
-            ;;
-    esac
-done
+        fi
+
+        # 验证时间（如果提供）
+        if [ $# -ge 3 ] && (! [[ "$3" =~ ^[0-9]+(\.[0-9]+)?$ ]] || (($(echo "$3 <= 0" | bc -l)))); then
+            echo "错误：时间必须是正数！"
+            usage
+        fi
+
+        # 设置舵机
+        set_servo "$1" "$2" "$3"
+        ;;
+
+    "stop")
+        stop_servo
+        ;;
+
+    *)
+        echo "错误：无效指令 '$1'！"
+        usage
+        ;;
+esac
+
+# 保持 PWM 启用状态（不自动禁用）
+# 如果需要禁用，可以取消下面一行的注释
+# echo 0 > "$PWM_PATH/enable"
