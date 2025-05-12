@@ -37,7 +37,7 @@ struct bme280_calib {
 struct bme280_dev {
     struct mutex lock;
     struct bme280_calib calib;
-    bool calib_valid; // 新增校准状态标记
+    bool calib_valid; 
 };
 
 static int major;
@@ -54,7 +54,7 @@ static struct bme280_dev dev;
 #define SCL_LOW()   gpio_set_value(SCL_GPIO, 0)
 #define SDA_READ()  gpio_get_value(SDA_GPIO)
 
-/* I2C基础函数 */
+
 static void i2c_delay(void) {
     udelay(5);
 }
@@ -65,7 +65,7 @@ static void i2c_stop(void) {
     SDA_HIGH();
     i2c_delay();
 }
-/* 新增总线恢复函数 */
+/* 总线恢复函数 */
 static void i2c_recover(void) {
     int i;
     gpio_direction_output(SCL_GPIO, 1);
@@ -87,8 +87,6 @@ static void i2c_start(void) {
     SCL_LOW();
 }
 
-
-
 static u8 i2c_write_byte(u8 data) {
     int i;
     u8 ack;
@@ -100,19 +98,19 @@ static u8 i2c_write_byte(u8 data) {
         i2c_delay();
     }
     SCL_LOW();
-    SDA_HIGH(); // 释放SDA线
+    SDA_HIGH(); 
     i2c_delay();
     SCL_HIGH();
     i2c_delay();
     ack = SDA_READ();
     SCL_LOW();
-    return ack; // 0表示ACK，1表示NACK
+    return ack;
 }
 
 static u8 i2c_read_byte(u8 ack) {
     int i;
     u8 data = 0;
-    SDA_HIGH(); // 确保SDA为输入模式
+    SDA_HIGH(); 
     gpio_direction_input(SDA_GPIO);
     for (i = 7; i >= 0; i--) {
         SCL_LOW();
@@ -294,11 +292,10 @@ static int bme280_read_raw(s32 *temp, s32 *press, s32 *hum) {
     return 0;
 }
 
-/* 用户空间接口 */
 struct bme280_data {
-    s32 temp;    // ℃ x100
+    s32 temp;    // ℃ 
     u32 press;   // Pa
-    u32 hum;     // % x1024
+    u32 hum;     // % 
     
 };
 
@@ -430,5 +427,5 @@ module_init(bme280_init);
 module_exit(bme280_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Your Name");
+MODULE_AUTHOR("Alen");
 MODULE_DESCRIPTION("BME280 I2C Sensor Driver");

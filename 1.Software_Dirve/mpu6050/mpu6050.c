@@ -339,4 +339,4 @@ static void __exit mpu6050i2c_exit(void)
 module_init(mpu6050i2c_init);
 module_exit(mpu6050i2c_exit);
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("1997AURORA");
+MODULE_AUTHOR("Alen");
